@@ -1,13 +1,33 @@
 from rest_framework import status
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework_simplejwt.authentication import JWTAuthentication
 
-from src.services.obs import ObservationConflict, create_observation
+from src.auth.permissions import IsStaff
+from src.services.obs import ObservationConflict, create_observation, list_observations
 from src.validators.obs import ObservationSerializer
 
 
 class ObservationController(APIView):
     """Ingests a single daily patient observation from the hospital system."""
+
+    authentication_classes = [JWTAuthentication]
+
+    def get_permissions(self):
+        if self.request.method == "POST":
+            return [AllowAny()]
+        return [IsStaff()]
+
+    def get(self, request):
+        observations = list_observations()
+        return Response(
+            {
+                "success": True,
+                "data": observations,
+            },
+            status=status.HTTP_200_OK,
+        )
 
     def post(self, request):
         serializer = ObservationSerializer(data=request.data)

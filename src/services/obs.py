@@ -49,3 +49,12 @@ def create_observation(data: dict) -> tuple[PatientObservation, bool]:
         ) from None
 
     return observation, True
+
+
+def list_observations() -> list[dict]:
+    """Return all observations ordered by date."""
+    return list(
+        PatientObservation.objects.all()
+        .order_by("date")
+        .values("date", "patients")
+    )

@@ -1,10 +1,13 @@
 from datetime import date, timedelta
 
+from django.contrib.auth.models import Group, User
 from django.test import TestCase
 
 from src.models.obs import PatientObservation
 
 OBS_URL = "/api/v1/obs/"
+
+STAFF_PASSWORD = "staff-password-123"
 
 
 def payload(day_offset: int, patients: int = 42) -> dict:
@@ -12,6 +15,24 @@ def payload(day_offset: int, patients: int = 42) -> dict:
         "date": (date.today() + timedelta(days=day_offset)).isoformat(),
         "patients": patients,
     }
+
+
+def staff_headers(client, role: str = "MANAGER") -> dict:
+    user = User.objects.create_user(
+        username=f"staff-{role.lower()}",
+        password=STAFF_PASSWORD,
+    )
+    group, _ = Group.objects.get_or_create(name=role)
+    user.groups.add(group)
+
+    response = client.post(
+        "/api/v1/auth/login/",
+        {"username": user.username, "password": STAFF_PASSWORD},
+        content_type="application/json",
+    )
+    assert response.status_code == 200, response.content
+
+    return {"HTTP_AUTHORIZATION": f"Bearer {response.json()['access']}"}
 
 
 class ObservationIngestionTests(TestCase):
@@ -57,3 +78,33 @@ class ObservationIngestionTests(TestCase):
         response = self.client.post(OBS_URL, body, content_type="application/json")
 
         self.assertEqual(response.status_code, 400)
+
+
+class ObservationReadTests(TestCase):
+    def test_get_empty_returns_empty_list(self):
+        response = self.client.get(OBS_URL, **staff_headers(self.client))
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["success"])
+        self.assertEqual(data["data"], [])
+
+    def test_get_returns_ordered_observations(self):
+        self.client.post(OBS_URL, payload(-2, 100), content_type="application/json")
+        self.client.post(OBS_URL, payload(-1, 200), content_type="application/json")
+
+        response = self.client.get(OBS_URL, **staff_headers(self.client))
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["success"])
+        self.assertEqual(len(data["data"]), 2)
+        self.assertEqual(data["data"][0]["date"], (date.today() - timedelta(days=2)).isoformat())
+        self.assertEqual(data["data"][0]["patients"], 100)
+        self.assertEqual(data["data"][1]["date"], (date.today() - timedelta(days=1)).isoformat())
+        self.assertEqual(data["data"][1]["patients"], 200)
+
+    def test_get_requires_authentication(self):
+        response = self.client.get(OBS_URL)
+
+        self.assertEqual(response.status_code, 401)
