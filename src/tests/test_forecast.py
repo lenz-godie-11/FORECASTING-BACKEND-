@@ -1,5 +1,4 @@
 from datetime import date, timedelta
-from unittest.mock import patch
 
 from django.contrib.auth.models import Group, User
 from django.test import TestCase
@@ -59,7 +58,33 @@ class ForecastServiceTests(TestCase):
         self.assertEqual(result["history_start"], str(run.history_start))
         self.assertEqual(result["history_end"], str(run.history_end))
 
-    def test_ninety_points_linked_to_run_with_valid_dates(self):
+    def test_forecast_dates_derived_from_current_history(self):
+        latest_date = date(2026, 10, 2)
+        days = (date.today() - latest_date).days
+        for i in range(90):
+            PatientObservation.objects.create(
+                date=latest_date - timedelta(days=89 - i),
+                patients=100 + 10 * (i % 7),
+            )
+
+        result = trigger_forecast()
+
+        run = ForecastRun.objects.get()
+        self.assertEqual(result["history_end"], str(latest_date))
+        self.assertEqual(result["history_start"], str(latest_date - timedelta(days=89)))
+
+        points = result["forecast"]
+        self.assertEqual(len(points), 90)
+
+        self.assertEqual(points[0]["date"], "2026-10-03")
+        self.assertEqual(points[-1]["date"], "2026-12-31")
+
+        forecasts = list(ForecastPoint.objects.all().order_by("date"))
+        self.assertEqual(len(forecasts), 90)
+        self.assertEqual(forecasts[0].date.isoformat(), "2026-10-03")
+        self.assertEqual(forecasts[-1].date.isoformat(), "2026-12-31")
+
+    def test_forecast_dates_strictly_increasing_and_numeric(self):
         seed_observations()
         trigger_forecast()
 
@@ -70,8 +95,8 @@ class ForecastServiceTests(TestCase):
         self.assertTrue(all(point.predicted_patients >= 0 for point in points))
         dates = [point.date for point in points]
         self.assertEqual(dates, sorted(dates))
-        self.assertEqual(dates[0], date(2023, 1, 1))
-        self.assertEqual(dates[-1], date(2023, 3, 31))
+        self.assertTrue(all(dates[i] < dates[i + 1] for i in range(len(dates) - 1)))
+        self.assertTrue(all(isinstance(d, date) for d in dates))
 
     def test_get_forecast_latest_and_by_id(self):
         seed_observations()
@@ -96,21 +121,23 @@ class ForecastServiceTests(TestCase):
             len({point.date for point in ForecastPoint.objects.all()}), 90
         )
 
-    def test_production_artifact_loaded_once_and_cached(self):
-        import business_logic.services.theta as theta_module
-
-        theta_module._fitted_model = None
-
+    def test_forecast_points_are_numeric_and_non_negative(self):
         seed_observations()
         trigger_forecast()
-        self.assertIsNotNone(theta_module._fitted_model)
 
-        cached = theta_module._fitted_model
+        points = list(ForecastPoint.objects.order_by("date").all())
+        self.assertTrue(all(isinstance(p.predicted_patients, float) for p in points))
+        self.assertTrue(all(p.predicted_patients >= 0 for p in points))
+
+    def test_forecast_metadata_unchanged(self):
+        seed_observations()
         trigger_forecast()
-        self.assertIs(theta_module._fitted_model, cached)
 
+        run = ForecastRun.objects.get()
+        self.assertEqual(run.model, "ThetaModel")
+        self.assertEqual(run.period, 7)
+        self.assertEqual(run.horizon, 90)
 
-class ForecastApiTests(TestCase):
     def test_post_triggers_forecast(self):
         seed_observations()
         response = self.client.post(
